@@ -1,270 +1,151 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from loadMNIST import MnistDataloader
-from os.path import join
-import os
 
-# ----------A-------------
+#---------1--------
 def sigmoid(z):
-    return 1 / (1 + np.exp(-z))
+    return 1.0 / (1.0 + np.exp(-z))
 
-def logistic_loss(w, b, X, y, lam):
-    """
-    Logistic regression loss with L2 regularization
-    """
+def logistic_regression_objective(X, y, w, b, reg_lambda: float = 0.0):
     m = X.shape[1]
-    z = w @ X + b       # shape (m,)
-    s = sigmoid(z)      # shape (m,)
+    z = w.T @ X + b
+    h = sigmoid(z)
+    eps = 1e-12                       
+    cost = -(np.sum(y * np.log(h + eps) +
+                    (1 - y) * np.log(1 - h + eps))) / m
+    cost += (reg_lambda / 2) * np.sum(w ** 2)
+    return cost
 
-    # Avoid log(0)
-    eps = 1e-15
-    s = np.clip(s, eps, 1 - eps)
-
-    loss = (-1 / m) * np.sum(y * np.log(s) + (1 - y) * np.log(1 - s))
-    loss += (lam / 2) * np.sum(w ** 2)
-    return loss
-
-def logistic_grad(w, b, X, y, lam):
-    """
-    Gradient of logistic loss w.r.t w and b
-    """
+def logistic_regression_gradient(X, y, w, b, reg_lambda: float = 0.0):
     m = X.shape[1]
-    z = w @ X + b
-    s = sigmoid(z)
+    h = sigmoid(w.T @ X + b)
+    diff = h - y
 
-    dw = (1 / m) * (X @ (s - y).T) + lam * w   # shape (n,)
-    db = (1 / m) * np.sum(s - y)
-    return dw, db
+    grad_w = (X @ diff) / m + reg_lambda * w
+    grad_b = np.sum(diff) / m
+    return grad_w, grad_b
 
-def logistic_hessian(w, b, X, y, lam):
-    """
-    Hessian of logistic loss w.r.t w (and optionally b)
-    Returns: (n+1)x(n+1) matrix for [w; b]
-    """
+def logistic_regression_hessian(X, y, w, b, reg_lambda: float = 0.0):
     m = X.shape[1]
-    z = w @ X + b
-    s = sigmoid(z)
-    D = s * (1 - s)  # shape (m,)
-    
-    # build X~ by adding row of ones for bias
-    X_tilde = np.vstack([X, np.ones((1, m))])  # shape (n+1, m)
+    h = sigmoid(w.T @ X + b)
+    S = h * (1 - h)                    
+    XS = X * S                         
+    H_ww = (XS @ X.T) / m + reg_lambda * np.eye(X.shape[0])
+    return H_ww
 
-    # compute Hessian using D
-    H = (1 / m) * (X_tilde * D) @ X_tilde.T
-    
-    # add lambda to w-w block (not bias)
-    H[:-1, :-1] += lam * np.eye(w.shape[0])
+#---------2---------
 
-    return H
+def directional_gradient_test_wb(X, y, w, b, epsilon=1e-5, num_checks=5):
+    print("Directional Gradient Test :")
+    n = w.size
+    for _ in range(num_checks):
+        d = np.random.randn(n + 1)
+        d /= np.linalg.norm(d)
+        dw, db = d[:-1], d[-1]
 
-# ----------B-------------
+        f0 = logistic_regression_objective(X, y, w,                b)
+        f1 = logistic_regression_objective(X, y, w + epsilon * dw, b + epsilon * db)
 
-def gradient_check(w, b, X, y, lam, d_w=None, d_b=None, epsilons=None):
-    """
-    Checks the gradient implementation of logistic loss.
-    """
-    if epsilons is None:
-        epsilons = [10**(-i) for i in range(1, 9)]
+        grad_w, grad_b = logistic_regression_gradient(X, y, w, b)
+        gTd = grad_w @ dw + grad_b * db
+        err = abs((f1 - f0) / epsilon - gTd)
+        print(f"  error: {err:.5e}")
 
-    if d_w is None:
-        d_w = np.random.randn(*w.shape)
-    if d_b is None:
-        d_b = np.random.randn()
+def directional_hessian_test_wb(X, y, w, b, epsilon=1e-5, num_checks=5):
+    print("Directional Hessian Test :")
+    n, m = X.shape
 
-    loss0 = logistic_loss(w, b, X, y, lam)
-    grad_w, grad_b = logistic_grad(w, b, X, y, lam)
-    g_dot_d = grad_w @ d_w + grad_b * d_b
+    # חישוב block-wise
+    z  = w.T @ X + b
+    h  = sigmoid(z)
+    S  = h * (1 - h)
 
-    print("Gradient Check:")
-    for eps in epsilons:
-        w_eps = w + eps * d_w
-        b_eps = b + eps * d_b
-        loss_eps = logistic_loss(w_eps, b_eps, X, y, lam)
-        num_approx = (loss_eps - loss0) / eps
-        rel_err = abs(num_approx - g_dot_d) / max(1e-8, abs(num_approx) + abs(g_dot_d))
-        print(f"ε={eps:.0e}:  approx={num_approx:.6f},  grad·d={g_dot_d:.6f},  rel_error={rel_err:.2e}")
+    XS   = X * S
+    H_ww = XS @ X.T / m
+    H_wb = np.sum(XS, axis=1) / m
+    H_bb = np.sum(S) / m
 
-def hessian_check(w, b, X, y, lam, d_w=None, d_b=None, epsilons=None):
-    """
-    Checks the Hessian implementation of logistic loss.
-    """
-    if epsilons is None:
-        epsilons = [10**(-i) for i in range(1, 9)]
+    H = np.zeros((n + 1, n + 1))
+    H[:n, :n]  = H_ww
+    H[:n, -1]  = H_wb
+    H[-1, :n]  = H_wb
+    H[-1, -1]  = H_bb
 
-    if d_w is None:
-        d_w = np.random.randn(*w.shape)
-    if d_b is None:
-        d_b = np.random.randn()
+    for _ in range(num_checks):
+        d = np.random.randn(n + 1)
+        d /= np.linalg.norm(d)
+        dw, db = d[:-1], d[-1]
 
-    grad0_w, grad0_b = logistic_grad(w, b, X, y, lam)
-    grad0 = np.concatenate([grad0_w, [grad0_b]])
+        g0_w, g0_b = logistic_regression_gradient(X, y, w,                b)
+        g1_w, g1_b = logistic_regression_gradient(X, y, w + epsilon*dw,   b + epsilon*db)
+        g_diff = np.concatenate([(g1_w - g0_w), [g1_b - g0_b]])
 
-    H = logistic_hessian(w, b, X, y, lam)
-    d = np.concatenate([d_w, [d_b]])
-    H_d = H @ d
+        Hd   = H @ d
+        err  = np.linalg.norm(g_diff / epsilon - Hd)
+        print(f"  error: {err:.5e}")
 
-    print("\nHessian Check:")
-    for eps in epsilons:
-        w_eps = w + eps * d_w
-        b_eps = b + eps * d_b
-        grad_eps_w, grad_eps_b = logistic_grad(w_eps, b_eps, X, y, lam)
-        grad_eps = np.concatenate([grad_eps_w, [grad_eps_b]])
-        diff = (grad_eps - grad0) / eps
-        rel_err = np.linalg.norm(diff - H_d) / max(1e-8, np.linalg.norm(diff) + np.linalg.norm(H_d))
-        print(f"ε={eps:.0e}:  rel_error={rel_err:.2e}")
+if __name__ == "__main__":
+    np.random.seed(0)
+    n, m = 5, 20
+    X = np.random.randn(n, m)
+    y = np.random.randint(0, 2, m).astype(float)
 
-# checking derivatives for logistic regression
-def check_derivatives(w, b, X, y, lam, d_w=None, d_b=None, epsilons=None):
-    if epsilons is None:
-        epsilons = [10**(-i) for i in range(1, 9)]
+    w = np.random.randn(n)
+    b = np.random.randn()
 
-    if d_w is None:
-        d_w = np.random.randn(*w.shape)
-    if d_b is None:
-        d_b = np.random.randn()
+    directional_gradient_test_wb(X, y, w, b)
+    print("")
+    directional_hessian_test_wb(X, y, w, b)
 
-    # === GRADIENT CHECK ===
-    loss0 = logistic_loss(w, b, X, y, lam)
-    grad_w, grad_b = logistic_grad(w, b, X, y, lam)
-    g_dot_d = grad_w @ d_w + grad_b * d_b
+#-------3---------
+import matplotlib.pyplot as plt
+import numpy.linalg as la
 
-    grad_errors = []
-    for eps in epsilons:
-        w_eps = w + eps * d_w
-        b_eps = b + eps * d_b
-        loss_eps = logistic_loss(w_eps, b_eps, X, y, lam)
-        num_approx = (loss_eps - loss0) / eps
-        rel_err = abs(num_approx - g_dot_d) / max(1e-8, abs(num_approx) + abs(g_dot_d))
-        grad_errors.append(rel_err)
-
-    # === HESSIAN CHECK ===
-    grad0 = np.concatenate([grad_w, [grad_b]])
-    H = logistic_hessian(w, b, X, y, lam)
-    d = np.concatenate([d_w, [d_b]])
-    H_d = H @ d
-
-    hess_errors = []
-    for eps in epsilons:
-        w_eps = w + eps * d_w
-        b_eps = b + eps * d_b
-        grad_eps_w, grad_eps_b = logistic_grad(w_eps, b_eps, X, y, lam)
-        grad_eps = np.concatenate([grad_eps_w, [grad_eps_b]])
-        diff = (grad_eps - grad0) / eps
-        rel_err = np.linalg.norm(diff - H_d) / max(1e-8, np.linalg.norm(diff) + np.linalg.norm(H_d))
-        hess_errors.append(rel_err)
-
-    # === PLOT RESULTS ===
-    fig, ax = plt.subplots(1, 2, figsize=(12, 4))
-    
-    ax[0].semilogx(epsilons, grad_errors, marker='o', label='Gradient check')
-    ax[0].set_title('Relative error - Gradient')
-    ax[0].set_xlabel('ε')
-    ax[0].set_ylabel('Relative error')
-    ax[0].grid(True)
-    
-    ax[1].semilogx(epsilons, hess_errors, marker='o', color='orange', label='Hessian check')
-    ax[1].set_title('Relative error - Hessian')
-    ax[1].set_xlabel('ε')
-    ax[1].set_ylabel('Relative error')
-    ax[1].grid(True)
-
+def show_images(images, titles, cols=5, figsize=(12, 6)):
+    rows = int(np.ceil(len(images) / cols))
+    plt.figure(figsize=figsize)
+    for idx, (img, title) in enumerate(zip(images, titles), 1):
+        plt.subplot(rows, cols, idx)
+        plt.imshow(img, cmap="gray")
+        plt.title(title, fontsize=10)
+        plt.axis("off")
     plt.tight_layout()
     plt.show()
 
-# Example usage
-if __name__ == "__main__":
-    np.random.seed(42)
-    n, m = 5, 10
-    X = np.random.randn(n, m)
-    y = np.random.randint(0, 2, size=m)
-    w = np.random.randn(n)
-    b = np.random.randn()
-    lam = 0.1
+x_train_n = x_train / 255.0 - 0.5
+x_test_n  = x_test  / 255.0 - 0.5
 
-    # Check gradients and Hessians
-    check_derivatives(w, b, X, y, lam)
- 
-# ----------C-------------
+x_train_flat = x_train_n.reshape(x_train.shape[0], -1).T  # (784 , m_train)
+x_test_flat  = x_test_n.reshape(x_test.shape[0],  -1).T    # (784 , m_test)
 
-# --- שלב 1: הגדרת נתיבים לטעינת MNIST ---
-# cwd = os.getcwd()
-# input_path = cwd + '\MNIST'
+# 2) Covariance matrix  Θ = (1/m) X Xᵀ   →  SVD
+m = x_train_flat.shape[1]
+theta = (x_train_flat @ x_train_flat.T) / m          # 784 × 784
 
-from loadMNIST import MnistDataloader, show_images
+U, S, _ = la.svd(theta)                              # Θ = U diag(S) Uᵀ
+eigens = np.sqrt(S)                                  # √ eigenvalues
 
-# קבע את הנתיבים הנכונים
-training_images_filepath = r'HW4/train-images.idx3-ubyte'
-training_labels_filepath = r'HW4/train-labels.idx1-ubyte'
-test_images_filepath = r'HW4/t10k-images.idx3-ubyte'
-test_labels_filepath = r'HW4/t10k-labels.idx1-ubyte'
-
-# טען את הנתונים
-mnist = MnistDataloader(training_images_filepath, training_labels_filepath,
-                        test_images_filepath, test_labels_filepath)
-(x_train, y_train), (x_test, y_test) = mnist.load_data()
-
-
-# === חלק 2: סינון ספרות והמרה למטריצה X ∈ R^(784 x m) ===
-def filter_digits(images, labels, digits=(0,1), max_samples=30000):
-    images = np.array(images)
-    labels = np.array(labels)
-    mask = np.isin(labels, digits)
-    images = images[mask]
-    labels = labels[mask]
-    if images.shape[0] > max_samples:
-        images = images[:max_samples]
-        labels = labels[:max_samples]
-
-    # flatten to shape (784, m), normalize to [-0.5, 0.5]
-    X = images.reshape(images.shape[0], -1).T / 255.0 - 0.5
-    y = (labels == digits[1]).astype(np.float64)
-    return X, y
-
-X, y = filter_digits(x_train_raw, y_train_raw, digits=(0,1), max_samples=30000)
-m = X.shape[1]
-
-# === חלק 3: חישוב מטריצת קווריאנציה Θ ∈ R^(784 x 784) ===
-X_mean = np.mean(X, axis=1, keepdims=True)
-X_centered = X - X_mean
-Theta = (1 / m) * (X_centered @ X_centered.T)
-
-# === חלק 4: Eigendecomposition של Θ ===
-eigvals, eigvecs = np.linalg.eigh(Theta)  # מתאים כי Θ סימטרית
-
-# === חלק 5: מיון הערכים העצמיים והעמודות של U בסדר יורד ===
-idx = np.argsort(eigvals)[::-1]  # יורד
-eigvals_sorted = eigvals[idx]
-U = eigvecs[:, idx]              # גם את העמודות של U נמיין בהתאם
-
-# === חלק 6: הצגת ערכי Σ (שורש של eigenvalues) ===
-singular_values = np.sqrt(np.maximum(eigvals_sorted, 0))  # רק חיוביים
-plt.figure(figsize=(8, 4))
-plt.plot(singular_values, marker='o')
-plt.title("Singular values (√eigenvalues of Θ)")
+# 3) Plot eigenvalues
+plt.figure(figsize=(6,4))
+plt.plot(eigens, lw=1.5)
+plt.title("Eigenvalues of covariance matrix")
 plt.xlabel("Index")
-plt.ylabel("Singular value")
+plt.ylabel("Eigenvalue")
 plt.grid(True)
 plt.show()
 
-# === חלק 7: הקרנה ל־p=50 ממדים (Z ∈ R^(50 x m)) ===
+# 4) Dimensionality reduction to p = 50
 p = 50
-Up = U[:, :p]        # בסיס ה־PCA
-Z = Up.T @ X_centered
+U_p = U[:, :p]                        # (784 × 50)
+Z_train = U_p.T @ x_train_flat        # (50 × m_train)
+Z_test  = U_p.T @ x_test_flat         # (50 × m_test)
 
-# === חלק 8: שחזור תמונה ובדיקת איכות ההפחתה ===
-i = 0  # ניקח לדוגמה את הדוגמה הראשונה
-zi = Z[:, i]                             # הווקטור במימד 50
-x_rec = Up @ zi + X_mean[:, 0]          # שחזור + החזרת ממוצע
-x_orig = X[:, i] + X_mean[:, 0]         # המקורית אחרי centering
+# 5) Reconstruct a few samples and compare
+np.random.seed(20)
+indices = np.random.choice(x_train.shape[0], 10, replace=False)
 
-# === ציור: המקורית מול המשוחזרת ===
-plt.figure(figsize=(8, 4))
-plt.subplot(1, 2, 1)
-plt.imshow(x_orig.reshape(28, 28), cmap='gray')
-plt.title("Original image")
+# original & reconstructed (shift back +0.5 only for display)
+original_imgs      = [x_train_n[i] + 0.5 for i in indices]
+reconstructed_flat = (U_p @ Z_train).T.reshape(-1, 28, 28)
+reconstructed_imgs = [reconstructed_flat[i] + 0.5 for i in indices]
 
-plt.subplot(1, 2, 2)
-plt.imshow(x_rec.reshape(28, 28), cmap='gray')
-plt.title("Reconstructed from p=50")
-plt.tight_layout()
-plt.show()
+show_images(original_imgs,      [f"Original {i}"     for i in indices])
+show_images(reconstructed_imgs, [f"Reconstructed {i}" for i in indices])

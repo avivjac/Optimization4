@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 
-
+#-------1---------
 # ————— Numerically stable sigmoid —————
 def sigmoid(z: np.ndarray) -> np.ndarray:
     out = np.empty_like(z, dtype=np.float64)
@@ -52,6 +52,57 @@ def logistic_hess(w, b, X, y, lam=0.0):
     H[ d,  d] = H_bb
     return H
 
+#-------2---------
+def directional_gradient_check(w, b, X, y, lam=0.0,
+                               epsilon=1e-5, num_checks=5, seed=0):
+    """
+    verifies   (f(w+εd)−f(w))/ε  ≈  ∇f·d     for random directions d
+    """
+    print("=== Directional GRADIENT check ===")
+    rng = np.random.default_rng(seed)
+    d  = X.shape[1]                    # number of features
+
+    for _ in range(num_checks):
+        # random unit direction in R^{d+1}
+        dir_full = rng.standard_normal(d + 1)
+        dir_full /= np.linalg.norm(dir_full)
+        dw, db = dir_full[:-1], dir_full[-1]
+
+        f0 = logistic_loss(w,        b, X, y, lam)
+        f1 = logistic_loss(w+epsilon*dw, b+epsilon*db, X, y, lam)
+        gw, gb = logistic_grad(w, b, X, y, lam)
+        directional_derivative = gw @ dw + gb * db
+
+        diff = (f1 - f0) / epsilon - directional_derivative
+        print(f"  error: {abs(diff):.5e}")
+
+
+def directional_hessian_check(w, b, X, y, lam=0.0,
+                              epsilon=1e-5, num_checks=5, seed=0):
+    """
+    verifies   (∇f(w+εd) − ∇f(w))/ε  ≈  H·d    for random directions d
+    """
+    print("=== Directional HESSIAN check ===")
+    rng = np.random.default_rng(seed)
+    d  = X.shape[1]
+
+    H = logistic_hess(w, b, X, y, lam)       # (d+1) × (d+1)
+
+    for _ in range(num_checks):
+        dir_full = rng.standard_normal(d + 1)
+        dir_full /= np.linalg.norm(dir_full)
+        dw, db = dir_full[:-1], dir_full[-1]
+
+        # finite-difference of gradient
+        g0_w, g0_b = logistic_grad(w,            b,            X, y, lam)
+        g1_w, g1_b = logistic_grad(w+epsilon*dw, b+epsilon*db, X, y, lam)
+        g_diff = np.concatenate([(g1_w - g0_w), [g1_b - g0_b]]) / epsilon
+
+        Hd   = H @ dir_full
+        err  = np.linalg.norm(g_diff - Hd)
+        print(f"  error: {err:.5e}")
+
+#-------3&4---------
 # ————— Data loader for decompressed IDX files —————
 class MnistDataloader:
     def __init__(self, train_img, train_lbl, test_img, test_lbl):
@@ -78,6 +129,18 @@ class MnistDataloader:
         X_train, y_train = self.read_images_labels(self.train_img, self.train_lbl)
         X_test,  y_test  = self.read_images_labels(self.test_img,  self.test_lbl)
         return (X_train, y_train), (X_test, y_test)
+
+def show_images(imgs, titles, cols=5, s=2):
+    rows = int(np.ceil(len(imgs)/cols))
+    plt.figure(figsize=(cols*2*s, rows*2*s))
+    for i,(im,tt) in enumerate(zip(imgs,titles),1):
+        plt.subplot(rows,cols,i); plt.imshow(im, cmap='gray'); plt.axis('off'); plt.title(tt)
+    plt.tight_layout(); plt.show()
+
+def plot_eigenvalues(evals):
+    plt.figure(figsize=(6,4))
+    plt.plot(evals, lw=2); plt.title("√Eigenvalues (singular values)")
+    plt.xlabel("Index"); plt.ylabel("Value"); plt.grid(); plt.show()
 
 # ————— Armijo backtracking & solvers —————
 def backtracking_line_search(w, b, X, y, lam, gw, gb, dw, db,
@@ -132,6 +195,25 @@ def newton_method(X, y, lam=1e-3, max_iters=100, tol=1e-3):
 
 # ————— Main: load data, PCA, solve 0 vs 1 & 8 vs 9, plot —————
 if __name__ == "__main__":
+    np.random.seed(42)
+    n_samples = 40
+    n_features = 7
+
+    X = np.random.randn(n_samples, n_features)
+    true_w = np.random.randn(n_features)
+    true_b = 0.3
+    probs  = sigmoid(X @ true_w + true_b)
+    y = (probs > 0.5).astype(float)          
+
+    # initial parameters
+    w0 = np.random.randn(n_features)
+    b0 = np.random.randn()
+    lam = 0.1                               
+
+    directional_gradient_check(w0, b0, X, y, lam)
+    print()
+    directional_hessian_check(w0, b0, X, y, lam)
+
     cwd = os.getcwd()
     ti = os.path.join(cwd, "train-images.idx3-ubyte")
     tl = os.path.join(cwd, "train-labels.idx1-ubyte")
@@ -155,6 +237,17 @@ if __name__ == "__main__":
     Z_train = Xc @ U50
     Z_test  = (X_test - mu) @ U50
     print("PCA ->", Z_train.shape, Z_test.shape)
+
+    plot_eigenvalues(np.sqrt(eigvals))
+
+    k = 10
+    samp_idx = np.random.choice(X_train.shape[0], k, replace=False)
+    originals    = X_train[samp_idx].reshape(-1,28,28)
+    rec_flat     = ( (Xc[samp_idx] @ U50) @ U50.T + mu )
+    recon_imgs   = rec_flat.reshape(-1,28,28)
+    show_images(originals,  [f"orig {i}" for i in samp_idx], cols=5, s=1.5)
+    show_images(recon_imgs, [f"recon {i}"for i in samp_idx], cols=5, s=1.5)
+
 
     # 0 vs 1
     mask01 = np.isin(y_train, [0,1])
